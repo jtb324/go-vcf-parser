@@ -1,0 +1,5 @@
+# build directory
+build/
+
+# test data dir (This has data that can't be put in version control)
+test_data/
