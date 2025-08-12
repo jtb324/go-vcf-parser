@@ -19,7 +19,7 @@ build:
 confirm: 
 		@echo -n 'Please confirm that you wish to remove the build directory, ${BUILD_DIR}. [y/N] ' && read ans && [ $${ans:-N} = y ] # We use the ans value but if the ans is empty then we will use N as a default
 
-## clean: clean up the build folder
+## clean: Clean up the build folder. User will be asked to confirm their decision
 .PHONY: clean
 clean: confirm
 		@echo "removing the directory ${BUILD_DIR}"
