@@ -45,9 +45,8 @@ func (fr FileReader) CheckErrors() {
 
 func (fr FileReader) Close() {
 	for _, reader := range fr.Handles {
-		err := reader.Close()
-		if err != nil {
-			fmt.Printf("Unable to close the file %s. Encoutnered the following error:\n %s", fr.Filename, err)
+		if err := reader.Close(); err != nil {
+			fmt.Printf("Unable to close the file %s. Encountered the following error:\n %s", fr.Filename, err)
 		}
 	}
 }
