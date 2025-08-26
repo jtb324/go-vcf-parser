@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"go-phers-parser/internal/files"
 	"os"
 	"regexp"
 	"strconv"
@@ -10,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	gzip "github.com/klauspost/pgzip"
 	"github.com/spf13/cobra"
 )
 
@@ -252,16 +253,16 @@ func writeToFile(samples string, annotation_cols []string, writer *bufio.Writer,
 	fmt.Printf("Recorded information for %d variant(s)\n", variants_written)
 }
 
-func load_column_mappings(line string) map[string]int {
-	column_mappings := make(map[string]int)
-
-	column_list := strings.Split(strings.TrimSpace(line), "\t")
-
-	for indx, value := range column_list {
-		column_mappings[value] = indx
-	}
-	return column_mappings
-}
+// func load_column_mappings(line string) map[string]int {
+// 	column_mappings := make(map[string]int)
+//
+// 	column_list := strings.Split(strings.TrimSpace(line), "\t")
+//
+// 	for indx, value := range column_list {
+// 		column_mappings[value] = indx
+// 	}
+// 	return column_mappings
+// }
 
 func check_region(anno_pos string, start int, end int) (bool, []error) {
 	re := regexp.MustCompile(`[:|-]`)
@@ -310,90 +311,75 @@ func read_annotations(filepath string, cols_to_grab []string, region Region) (ma
 
 	var err error
 
-	// we need to open the file, pass to a gzip reader and then pass to a bufio Scanner
-	anno_fh, anno_err := os.Open(filepath)
+	anno_fr := files.MakeCompressedFileReader(filepath, 7168*7168)
 
-	if anno_err != nil {
-		err = fmt.Errorf("encountered the following error while attempting to open the annotation file:\n %s", anno_err)
+	if anno_fr.Err != nil {
+		anno_fr.CheckErrors()
 	}
 
-	defer anno_fh.Close()
+	defer anno_fr.Close()
 
-	gzip_anno_reader, gzip_err := gzip.NewReader(anno_fh)
-
-	if gzip_err != nil {
-		err = fmt.Errorf("encountered the following error while trying to decompress the annotation file:\n %s", gzip_err)
+	header_err := anno_fr.ParseHeader("#Uploaded_variation")
+	// If there was an error while parsing the header line (or if the header line was not found) then we need to end the function early and return.
+	if header_err != nil {
+		return nil, header_err
+	} else if !anno_fr.Header_Found {
+		return nil, errors.New("there was no header line detected within the file %s, when we were looking for the phrase %s. Since this program is designed to work with VEP and this is default column header in VEP, this value is necessary for the rest of the analysis. Please make sure that this value is in the annotation file")
+	} else {
+		fmt.Printf("Mapped the indices of %d columns from the annotation file header", len(anno_fr.Header_col_indx))
 	}
 
-	defer gzip_anno_reader.Close()
-
-	buf := make([]byte, 0, 7168*7168)
-
-	// anno_scanner := bufio.NewScanner(gzip_anno_reader)
-	anno_scanner := bufio.NewScanner(gzip_anno_reader)
-
-	anno_scanner.Buffer(buf, 7168*7168)
-
-	column_mappings := make(map[string]int)
 Main_Loop:
-	for anno_scanner.Scan() {
-		cur_line := anno_scanner.Text()
-		// we can skip the normal headers in the vcf that are used to
-		// log information from prior transformations done on the data
-		if strings.Contains(cur_line, "##") {
-			continue
-			// We can use the column header line to map the columns that we want to keep
-		} else if strings.Contains(cur_line, "#") {
-			column_mappings = load_column_mappings(cur_line)
-			// otherwise we can process the variants
+	for anno_fr.FileScanner.Scan() {
+		cur_line := anno_fr.FileScanner.Text()
+		// Once we are past all of the header lines then we can pull information for each variant.
+		// Sometimes variants also have multiple transcripts and therefore show up on multiple rows.
+		// We have to handle this by aggregating together the different information
+		// we can use a string builder to keep track of the annotation and separate the different values by a comma
+		split_line := strings.Split(strings.TrimSpace(cur_line), "\t")
+		// first lets see if this annotation is even in the right position. If it is not in the right position then we can just continue the loop
+		if in_region, ok := check_region(split_line[1], region.start, region.end); !in_region && ok == nil {
+			continue Main_Loop
+		} else if ok != nil {
+			fmt.Printf("Encountered an issue while checking if the variant %s was in the search region of %d-%d\n %s\n Skipping this variant and proceeding to the next one", split_line[1], region.start, region.end, ok)
+		}
+		// we can check if there is already an annotation created for the variant and add things to it. Otherwise we can just
+		variant_annotations := annotations[split_line[0]]
+		// if the anotation is present then we can iterate over the columns and update the string.builder for each appropriate columns
+		if variant_annotations != nil {
+			for _, col := range cols_to_grab {
+				if value, ok := anno_fr.Header_col_indx[col]; ok {
+					value_str := fmt.Sprintf(";%s", split_line[value])
+					variant_annotations[col].WriteString(value_str)
+				}
+			}
+			// otherwise we have to create a new map that will have a key for each column in the
+			// analysis. We can then iterate over each column and append information to the string.Builder for that key
 		} else {
-			// Once we are past all of the header lines then we can pull information for each variant.
-			// Sometimes variants also have multiple transcripts and therefore show up on multiple rows.
-			// We have to handle this by aggregating together the different information
-			// we can use a string builder to keep track of the annotation and separate the different values by a comma
-			split_line := strings.Split(strings.TrimSpace(cur_line), "\t")
-			// first lets see if this annotation is even in the right position. If it is not in the right position then we can just continue the loop
-			if in_region, ok := check_region(split_line[1], region.start, region.end); !in_region && ok == nil {
-				continue Main_Loop
-			} else if ok != nil {
-				fmt.Printf("Encountered an issue while checking if the variant %s was in the search region of %d-%d\n %s\n Skipping this variant and proceeding to the next one", split_line[1], region.start, region.end, ok)
-			}
-			// we can check if there is already an annotation created for the variant and add things to it. Otherwise we can just
-			variant_annotations := annotations[split_line[0]]
-			// if the anotation is present then we can iterate over the columns and update the string.builder for each appropriate columns
-			if variant_annotations != nil {
-				for _, col := range cols_to_grab {
-					if value, ok := column_mappings[col]; ok {
-						value_str := fmt.Sprintf(";%s", split_line[value])
-						variant_annotations[col].WriteString(value_str)
-					}
+			variant_annos := make(VariantAnnotations)
+			for _, col := range cols_to_grab {
+				col_values := strings.Builder{}
+				if value, ok := anno_fr.Header_col_indx[col]; ok {
+					col_values.WriteString(split_line[value])
+					variant_annos[col] = &col_values
 				}
-				// otherwise we have to create a new map that will have a key for each column in the
-				// analysis. We can then iterate over each column and append information to the string.Builder for that key
-			} else {
-				variant_annos := make(VariantAnnotations)
-				for _, col := range cols_to_grab {
-					col_values := strings.Builder{}
-					if value, ok := column_mappings[col]; ok {
-						col_values.WriteString(split_line[value])
-						variant_annos[col] = &col_values
-					}
-				}
-				annotations[split_line[0]] = variant_annos
 			}
+			annotations[split_line[0]] = variant_annos
 		}
 	}
-	if anno_scanner.Err() != nil {
-		err = fmt.Errorf("encountered the following error while scanner through the annotations file:\n%s", anno_scanner.Err())
+	if anno_fr.FileScanner.Err() != nil {
+		err = fmt.Errorf("encountered the following error while scanner through the annotations file:\n%s", anno_fr.FileScanner.Err())
 	}
 	// If there were no annotations loaded into the map then we need to return an error and let the program terminate
 	if len(annotations) == 0 {
 		err = fmt.Errorf("there were no annotations loading into the internal annotation hashmap after processing the annotations file. This error may could be because the annotation file is empty. but is more likely that the annotation columns that the user desired to keep are not present in the file (Probably due to a spelling error). Please check your annotation file and make sure that the columns you wish to keep are present in the file and spelled the exact same way")
 	}
-	// if len(annotations) < len(cols_to_grab) { // TODO: This error message is actually not right. Currently it gets set off it there are no annotations found.
-	//
-	// 	fmt.Printf("Expected to find %d annotations fields due to the %d keep columns passed to the program. Instead there were only %d fields loaded into the annotations hashmap. There may have been a typo in one of the column names. This is not a fatal issue so the analysis will continue and the output will be missing one of the expected columns. If you wish to end the analysis hit control-C.\n", len(cols_to_grab), len(cols_to_grab), len(annotations))
-	// }
+
+	func() {
+		for _, fh := range anno_fr.Handles {
+			defer fh.Close()
+		}
+	}()
 
 	fmt.Printf("Read in %d annotations from the file: %s\n", len(annotations), filepath)
 	return annotations, err
@@ -508,6 +494,7 @@ func pull_variants(cmd *cobra.Command, args []string) {
 	anno_cols_to_keep := strings.Split(cols_to_keep, ",")
 
 	anno_map, anno_err := read_annotations(anno_file, anno_cols_to_keep, parsed_region)
+
 	if anno_err != nil {
 		fmt.Printf("Encountered the following error while trying to read in the annotations.\n %s\n", anno_err)
 		os.Exit(1)
