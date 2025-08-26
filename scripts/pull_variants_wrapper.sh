@@ -1,17 +1,14 @@
 #!/bin/bash
 # We are going to make some of the font bold so it stands out. We can use tput so that this works on more systems than just the stand escape sequences
-bold=$(tput bold)
-normal=$(tput sgr0)
-underline=$(tput smul)
-no_underline=$(tput rmul)
+
 
 usage() {
-  echo "${bold}Usage:${normal} {scriptname} [-h] [-r] [-s] [-i] [-a] [-p] [-k] [-m] [-o] [-c]"
+  echo "Usage: {scriptname} [-r] [-s] [-i] [-a] [-p] [-k] [-m] [-o] [-c] [-C]"
   printf "=%.0b" {1..70}
   printf "\n"
-  echo "${bold}Options:${normal}"
+  echo "Options:"
   echo "  -h    show the help message"
-  echo "${bold}Required Flags:${normal}"
+  echo "Required Flags:"
   echo "  -r    region of the genome to search for"
   echo "  -s    tab separated text file containing all the samples that we want to pull the sequencing calls for. This file should be formatted for bcftools -S flag"
   echo "  -i    sequencing vcf file to use as input. This will be passed to bcftools"
@@ -21,14 +18,15 @@ usage() {
   echo "  -m    minor allele frequency cap that defines the maximum minor allele frequency that we will use to parse the sequencing file."
   echo "  -c    column index (0-based) of the clinical annotations within the annotation file"
   echo "  -n    a file of cases in the network of interest to pull the sequencing for. This file should have 1 column and may or may not have a header. This file should be a subset of the '-s' samples file"
-  echo "  -o    Output filepath with a prefix to write to. This argument should not end with any file extension and it should end in a directory path. The program will append the suffixes *_all_network_id_variants.txt and *_cases_in_network_variants.txt to create 2 files"
+  echo "  -o    Output filepath with a prefix to write to. This argument should not end with any file extension and it should end in a directory path. The program will append the suffixes  *_all_network_id_variants.txt and *_cases_in_network_variants.txt to create 2 files"
+  echo "  -v    name of the column that has variant conseqeunces such as 'missense' or 'intro_variant'"
 }
-optstring=":hrsiapkomcn"
+optstring="hr:s:i:a:p:k:o:m:c:n:v:"
 
-# while getopts ":h:r:s:i:a:p:k:o:m:c:n" opt; do
+# while getopts ":h:r:s:i:a:p:k:o:m:c:n:v" opt; do
 while getopts ${optstring} opt; do
   case ${opt} in
-  h)
+  h) 
     usage
     exit 0
     ;;
@@ -42,10 +40,16 @@ while getopts ${optstring} opt; do
   m) MAF_THRESHOLD=${OPTARG} ;;
   c) CLINVAR_COL_INDX=${OPTARG} ;;
   n) NETWORK_CASE_FILE=${OPTARG} ;;
+  v) CONSEQUENCE_COL_STRING=${OPTARG} ;;
   \?)
-    echo "Invalid option: -$OPTARG"
+    echo "Invalid option: -$OPTARG" 1>&2
     echo "Usage Menu shown below:"
     printf "\n"
+    usage
+    exit 1
+    ;;
+  : ) 
+    echo "Invalid option: $OPTARG requires an argument" 1>&2
     usage
     exit 1
     ;;
@@ -64,16 +68,16 @@ if [[ $MAF_THRESHOLD ]]; then MAF=$MAF_THRESHOLD; else MAF=0.1; fi
 printf '=%.0s' {1..60}
 printf "\n"
 echo "The following arguments were provided to the script:"
-echo "${bold}REGION${normal}=${REGION}"
-echo "${bold}SAMPLES_FILE${normal}=${SAMPLES_FILE}"
-echo "${bold}SEQUENCING_FILE${normal}=${SEQUENCING_FILE}"
-echo "${bold}ANNO_FILE${normal}=${ANNO_FILE}"
-echo "${bold}PHERS SCORES${normal}=${PHERS_FILE}"
-echo "${bold}ANNOTATION COLS TO KEEP${normal}=${ANNO_COLS}"
-echo "${bold}OUTPUT PREFIX PATH${normal}=${OUTPUT_PATH}"
-echo "${bold}MAXMIUM ALLELE FRQEUENCY THRESHOLD${normal}=${MAF}"
-echo "${bold}CLINVAR LABEL INDEX${normal}=${CLINVAR_COL_INDX}"
-echo "${bold}NETWORK CASES FILE${normal}=${NETWORK_CASE_FILE}"
+echo "REGION=${REGION}"
+echo "SAMPLES_FILE=${SAMPLES_FILE}"
+echo "SEQUENCING_FILE=${SEQUENCING_FILE}"
+echo "ANNO_FILE=${ANNO_FILE}"
+echo "PHERS SCORES=${PHERS_FILE}"
+echo "ANNOTATION COLS TO KEEP=${ANNO_COLS}"
+echo "OUTPUT PREFIX PATH=${OUTPUT_PATH}"
+echo "MAXMIUM ALLELE FRQEUENCY THRESHOLD=${MAF}"
+echo "CLINVAR LABEL INDEX=${CLINVAR_COL_INDX}"
+echo "NETWORK CASES FILE=${NETWORK_CASE_FILE}"
 printf '=%.0s' {1..60}
 printf "\n%.0s" {1..5}
 
@@ -95,7 +99,7 @@ bcftools view -r "$REGION" -S "$SAMPLES_FILE" -Ov "$SEQUENCING_FILE" | go-varian
 # #
 printf "=%.0s" {1..60}
 printf "\n"
-echo "Find all the variants that the samples in the file, ${NETWORK_CASE_FILE}, have using the output file"
+echo "Finding all the variants that the samples in the file, ${NETWORK_CASE_FILE}, have using the output file ${OUTPUT_GO_CMD1}"
 printf "\n"
 printf '=%.0s' {1..60}
 printf "\n"
