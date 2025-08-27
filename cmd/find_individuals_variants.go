@@ -125,13 +125,25 @@ func initialize_sample_info(samples []SampleID) map[string]*SampleInfo {
 	return sampleInfo
 }
 
-func parse_calls(calls_fr *files.FileReader, samples []string, pathogenic_colname string, consequence_colname string) (map[string]*SampleInfo, []error) {
+func parse_calls(calls_file string, samples []string, pathogenic_colname string, consequence_colname string) (map[string]*SampleInfo, []error) {
 	var errors []error
+
+	calls_fr := files.MakeFileReader(calls_file, 1024*1024)
+
+	if calls_fr.Err != nil {
+		fmt.Println(calls_fr.Err)
+	}
 	// lets defer the file closing
-	defer calls_fr.Close()
 	// lets go ahead and parse through the calls_file to get the header
 	err := calls_fr.ParseHeader("#CHROM")
+
 	errors = append(errors, err)
+
+	defer func() {
+		for _, handle := range calls_fr.Handles {
+			handle.Close()
+		}
+	}()
 
 	// If we never found the header then we need to early exit. Other wise we will try to get an index that doesn't exist
 	if !calls_fr.Header_Found {
@@ -268,21 +280,24 @@ func find_sample_variants(cmd *cobra.Command, args []string) {
 		}
 	}
 	// now we can parse through the output file for variants of interest
-	calls_fr := files.MakeFileReader(calls_file, 1024*1024)
 
 	// Create the scanner to read the calls file with a custom buffer
 
-	sample_variants, errs := parse_calls(calls_fr, samples, clinvar_column_name, consequence_col)
+	sample_variants, errs := parse_calls(calls_file, samples, clinvar_column_name, consequence_col)
 
-	fmt.Printf("Identified variants for %d samples\n", len(sample_variants))
-
-	if errs != nil {
-		fmt.Println("Encountered the following errors while scanning through the calls file to identify the variants that each sample has")
-		for indx, err_msg := range errs {
-			fmt.Printf("Error Msg %d:\n %s\n", indx, err_msg)
+	var parsing_err_encountered bool
+	for _, err_msg := range errs {
+		if err_msg != nil {
+			fmt.Printf("Error Msg:\n%s\n", err_msg)
+			parsing_err_encountered = true
 		}
+	}
+	if parsing_err_encountered {
+		fmt.Println("Terminating program because of the above errors...")
 		os.Exit(1)
 	}
+
+	fmt.Printf("Identified variants for %d samples\n", len(sample_variants))
 
 	output_fh, output_err := os.Create(output_filepath)
 

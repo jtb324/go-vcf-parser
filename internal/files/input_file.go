@@ -43,13 +43,13 @@ func (fr FileReader) CheckErrors() {
 	os.Exit(1)
 }
 
-func (fr FileReader) Close() {
-	for _, reader := range fr.Handles {
-		if err := reader.Close(); err != nil {
-			fmt.Printf("Unable to close the file %s. Encountered the following error:\n %s", fr.Filename, err)
-		}
-	}
-}
+// func (fr FileReader) Close() {
+// 	for _, reader := range fr.Handles {
+// 		if err := reader.Close(); err != nil {
+// 			fmt.Printf("Unable to close the file %s. Encountered the following error:\n %s", fr.Filename, err)
+// 		}
+// 	}
+// }
 
 func mapHeader(header_line string) (map[string]int, int) {
 	column_mappings := make(map[string]int)
