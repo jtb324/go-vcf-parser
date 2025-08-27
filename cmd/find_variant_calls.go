@@ -13,9 +13,9 @@ import (
 )
 
 var variant_calls = &cobra.Command{
-	Use:   "find_variant_calls",
+	Use:   "find-all-carriers",
 	Short: "find the individuals with variant calls for a site of interest. Expects vcf input to be streamed in from bcftools",
-	Run:   find_variant_calls,
+	Run:   find_all_carriers,
 }
 
 func check_alt_call(call string, reference_call_set map[string]bool) bool {
@@ -41,38 +41,67 @@ type VariantCalls struct {
 }
 
 func update_genotype_count(call string, genotype_counts map[string]int) {
-	if count, value_exist := genotype_counts[call]; value_exist {
-		count++
-	} else {
-		genotype_counts[call] = 1
+	switch call {
+	case "0/0":
+		genotype_counts["homo_ref"]++
+	case "0/1", "1/0":
+		genotype_counts["het"]++
+	case "1/1":
+		genotype_counts["homo_alt"]++
+	case "./.", ".":
+		genotype_counts["no_calls"]++
+	default:
+		genotype_counts["other"]++
 	}
 }
 
-func process_line(line string, header_map map[int]string, resultsObj Result) {
-	variantCallsObj := VariantCalls{VariantCarriers: make(map[string]string), GenotypeCounts: make(map[string]int)}
+func process_variant_stream(streamReader *files.VCFReader, resultsObj *Result) error {
+	for streamReader.FileScanner.Scan() {
 
-	split_line := strings.Split(strings.TrimSpace(line), "\t")
-
-	// We can add the variant string here
-	variantCallsObj.VariantInfo = split_line[0:3]
-
-	// We will need to generate the reference calls for comparison
-	ref_call_set := generate_reference_set()
-	// We can iterate over each call
-	for indx, calls := range split_line[9:] {
-		if check_alt_call(calls, ref_call_set) {
-			// We can add the id and the call to the carriers map
-			id := header_map[indx]
-			variantCallsObj.VariantCarriers[id] = calls
-			// Then we can also save the carrier ids we found. We will use
-			// this list to create the header for the output file later
-			resultsObj.Samples[id] = true // This is how you use a set in Go. Its the same as a map
+		// We can initialize the variantCalls object with a dictionary for the genotype counts.
+		// This structure will help us while writing later
+		variantCallsObj := VariantCalls{
+			VariantCarriers: make(map[string]string),
+			GenotypeCounts: map[string]int{
+				"homo_alt": 0,
+				"homo_ref": 0,
+				"het":      0,
+				"no_calls": 0,
+				"other":    0,
+			},
 		}
-		update_genotype_count(calls, variantCallsObj.GenotypeCounts)
-	}
-	fmt.Printf("Identified %d individuals who were either heterozygous or homozygous alt for the variant %s", len(variantCallsObj.VariantCarriers), variantCallsObj.VariantInfo[2])
 
-	resultsObj.Variants = append(resultsObj.Variants, variantCallsObj)
+		line := streamReader.FileScanner.Text()
+		split_line := strings.Split(strings.TrimSpace(line), "\t")
+
+		// We can add the variant string here
+		variantCallsObj.VariantInfo = split_line[0:3]
+
+		// We will need to generate the reference calls for comparison
+		ref_call_set := generate_reference_set()
+		// We can iterate over each call
+		for indx, calls := range split_line[9:] {
+			indx = indx + 9
+			// There may be some indices that are missing if there are samples we want to skip.
+			// We will need to check and make sure the key exist and only proceed if it does
+			if id, ok := streamReader.SampleMapping[indx]; ok {
+				if check_alt_call(calls, ref_call_set) {
+					// We can add the id and the call to the carriers map
+					variantCallsObj.VariantCarriers[id] = calls
+					// Then we can also save the carrier ids we found. We will use
+					// this list to create the header for the output file later
+					resultsObj.Samples[id] = true // This is how you use a set in Go. Its the same as a map
+				}
+				update_genotype_count(calls, variantCallsObj.GenotypeCounts)
+			}
+		}
+		fmt.Printf("Identified %d individuals who were either heterozygous or homozygous alt for the variant %s\n", len(variantCallsObj.VariantCarriers), variantCallsObj.VariantInfo[2])
+		resultsObj.Variants = append(resultsObj.Variants, variantCallsObj)
+	}
+	if streamReader.FileScanner.Err() != nil {
+		return streamReader.FileScanner.Err()
+	}
+	return nil
 }
 
 func writer(writer *bufio.Writer, results Result) {
@@ -80,21 +109,51 @@ func writer(writer *bufio.Writer, results Result) {
 	sample_list := results.generate_sample_list()
 	// Create the header string
 	header_str := strings.Builder{}
-	header_str.WriteString("CHROM\tPOS\tID\t")
-	header_str.WriteString(fmt.Sprintf("%s\t", strings.Join(sample_list, "\t")))
+	header_str.WriteString("CHROM\tPOS\tID\tHOMO_REF_COUNT\tHET_COUNT\tHOMO_ALT_COUNT\tNO_CALL_COUNT\tOTHER_CALL_COUNT\t")
+	header_str.WriteString(fmt.Sprintf("%s\n", strings.Join(sample_list, "\t")))
 
 	writer.WriteString(header_str.String())
+	// Now create the output string
+	for _, variant := range results.Variants {
+		row_str := strings.Builder{}
+		row_str.WriteString(fmt.Sprintf("%s\t%d\t%d\t%d\t%d\t%d", strings.Join(variant.VariantInfo, "\t"), variant.GenotypeCounts["homo_ref"], variant.GenotypeCounts["het"], variant.GenotypeCounts["homo_alt"], variant.GenotypeCounts["no_calls"], variant.GenotypeCounts["other"]))
+		for sampleID := range results.Samples {
+			sample_call, ok := variant.VariantCarriers[sampleID]
+
+			var output_str string
+			if ok {
+				output_str = fmt.Sprintf("\t%s:%s", sampleID, sample_call)
+			} else {
+				output_str = "\t-"
+			}
+			row_str.WriteString(output_str)
+		}
+		row_str.WriteString("\n")
+		writer.WriteString(row_str.String())
+	}
+	writer.Flush()
 }
 
 // This function is used to find all the individuals with variant calls for a site of interest.
 // It expects to have input streamed in from bcftools
-func find_variant_calls(cmd *cobra.Command, args []string) {
+func find_all_carriers(cmd *cobra.Command, args []string) {
 	output_filepath, _ := cmd.Flags().GetString("output")
-	// we need to create the reader
-	vcfStreamer := files.NewVcfStreamer(5012 * 5012)
+	buffersize, _ := cmd.Flags().GetInt("buffersize")
+	exclusion_substring, _ := cmd.Flags().GetString("sample-exclusion-string")
 
-	if err := vcfStreamer.Initialize(); err != nil {
-		fmt.Printf("Encountered the following error while reading through the streamed vcf file header")
+	// we need to create the reader
+	vcfStreamer := files.MakeStreamReader(buffersize)
+
+	// We need to add the sample-exclusion-string
+	vcfStreamer.SampleExclusions = strings.Split(exclusion_substring, ",")
+
+	// We need to early terminate if there was an error while parsing the header line or if there was no header line found in the file
+	if err := vcfStreamer.ParseHeader("#CHROM"); err != nil {
+		fmt.Printf("Encountered the following error while trying to parse the Header line of the vcf file being streamed in. Terminating program\n %s\n", err)
+		os.Exit(1)
+	} else if !vcfStreamer.Header_Found {
+		fmt.Printf("Expected the input vcf file %s, to have a header line containing the string #CHROM. This line is essential to map the genotype calls to individuals. Please ensure that this line is in the file. Terminating program...\n", vcfStreamer.Filename)
+		os.Exit(1)
 	}
 
 	// make a list of errors
@@ -102,13 +161,18 @@ func find_variant_calls(cmd *cobra.Command, args []string) {
 
 	resultObj := Result{Errors: err, Samples: make(map[string]bool)}
 
-	for vcfStreamer.Next_line != "" {
-		process_line(vcfStreamer.Next_line, vcfStreamer.Header_col_mappings, resultObj)
-		vcfStreamer.ReadNextLine()
-	}
+	process_variant_stream(vcfStreamer, &resultObj)
 
-	if vcfStreamer.CheckErrs() != nil {
-		fmt.Println("There was an error")
+	var error_encountered bool
+	for _, msg := range resultObj.Errors {
+		if msg != nil {
+			fmt.Printf("Error: %s\n", msg)
+			error_encountered = true
+		}
+	}
+	if error_encountered {
+		fmt.Println("Encountered the above errors while parsing through the vcf file stream. Terminating program...")
+		os.Exit(1)
 	}
 
 	output_fh, open_err := os.Create(output_filepath)
@@ -124,5 +188,6 @@ func find_variant_calls(cmd *cobra.Command, args []string) {
 func init() {
 	RootCmd.AddCommand(variant_calls)
 	variant_calls.Flags().StringP("output", "o", "test_output.txt", "Filepath to write the output file to.")
-	variant_calls.Flags().Int64P("buffersize", "b", 5012*5012, "buffersize to use while reading through the streamed input data. Default: 5012*5012 bytes")
+	variant_calls.Flags().IntP("buffersize", "b", 5012*5012, "buffersize to use while reading through the streamed input data. Default: 5012*5012 bytes")
+	variant_calls.Flags().String("sample-exclusion-string", "", "List of comma-separated substrings that may indicate if a sample should be excluded from the analysis. This situation can arise if reference panel controls were kept in the vcf or if invalid samples are present. This code can filter out those individuals by seeing if the substring is present int the ID. This list sould not have spaces between the strings")
 }

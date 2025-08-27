@@ -317,7 +317,11 @@ func read_annotations(filepath string, cols_to_grab []string, region Region) (ma
 		anno_fr.CheckErrors()
 	}
 
-	defer anno_fr.Close()
+	defer func() {
+		for _, handle := range anno_fr.Handles {
+			handle.Close()
+		}
+	}()
 
 	header_err := anno_fr.ParseHeader("#Uploaded_variation")
 	// If there was an error while parsing the header line (or if the header line was not found) then we need to end the function early and return.
@@ -326,7 +330,7 @@ func read_annotations(filepath string, cols_to_grab []string, region Region) (ma
 	} else if !anno_fr.Header_Found {
 		return nil, errors.New("there was no header line detected within the file %s, when we were looking for the phrase %s. Since this program is designed to work with VEP and this is default column header in VEP, this value is necessary for the rest of the analysis. Please make sure that this value is in the annotation file")
 	} else {
-		fmt.Printf("Mapped the indices of %d columns from the annotation file header", len(anno_fr.Header_col_indx))
+		fmt.Printf("Mapped the indices of %d columns from the annotation file header\n", len(anno_fr.Header_col_indx))
 	}
 
 Main_Loop:

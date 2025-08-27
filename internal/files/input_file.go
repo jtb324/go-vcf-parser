@@ -43,14 +43,6 @@ func (fr FileReader) CheckErrors() {
 	os.Exit(1)
 }
 
-// func (fr FileReader) Close() {
-// 	for _, reader := range fr.Handles {
-// 		if err := reader.Close(); err != nil {
-// 			fmt.Printf("Unable to close the file %s. Encountered the following error:\n %s", fr.Filename, err)
-// 		}
-// 	}
-// }
-
 func mapHeader(header_line string) (map[string]int, int) {
 	column_mappings := make(map[string]int)
 
@@ -129,4 +121,79 @@ func MakeFileReader(filename string, buffersize int) *FileReader {
 	scanner.Buffer(buf, buffersize)
 
 	return &FileReader{Filename: filename, FileScanner: scanner, Err: nil, Handles: handles, Header_Found: false}
+}
+
+func MakeStreamReader(buffersize int) *VCFReader {
+	buf := make([]byte, 0, buffersize)
+
+	stdin_streamer := bufio.NewScanner(os.Stdin)
+
+	stdin_streamer.Buffer(buf, buffersize)
+
+	fileReader := FileReader{
+		Filename:    "standard input",
+		FileScanner: stdin_streamer,
+		Err:         nil,
+		Handles:     nil,
+	}
+
+	return &VCFReader{FileReader: fileReader}
+}
+
+type VCFReader struct {
+	FileReader
+	SampleMapping    map[int]string
+	SampleExclusions []string // Sometimes in VCF files there are samples that we want to ignore (reference panel samples or invalid samples). This attribute will help us ignore them
+}
+
+func (vcfReader *VCFReader) ParseHeader(header_identifier string) error {
+	for vcfReader.FileScanner.Scan() {
+		line := vcfReader.FileScanner.Text()
+		if strings.Contains(line, header_identifier) {
+			col_indx, col_count := mapHeader(line)
+			// We will need to use the column indices and the col count later
+			vcfReader.Header_col_indx = col_indx
+			vcfReader.Col_count = col_count
+			// Now we also have to map the sample ids where the key is the indx and the value is the column label
+			vcfReader.SampleMapping = mapSamples(line, vcfReader.SampleExclusions)
+			// We also need to update that the header was found
+			vcfReader.Header_Found = true
+			break
+		}
+	}
+	if vcfReader.FileScanner.Err() != nil {
+		return vcfReader.FileScanner.Err()
+	}
+	return nil
+}
+
+func checkSkipSamples(sampleID string, skipWordsList []string) bool {
+	var skipword bool
+
+	for _, val := range skipWordsList {
+		if strings.Contains(strings.ToLower(sampleID), val) {
+			skipword = true
+			break
+		}
+	}
+	return skipword
+}
+
+// Because we stream in the vcf file, we need a way to keep track of
+// what columns have the sample ids. We can store the indices in a map
+// so that we can get the id later
+func mapSamples(header_line string, skipWords []string) map[int]string {
+	samplesMap := make(map[int]string)
+
+	split_line := strings.Split(strings.TrimSpace(header_line), "\t")
+
+	for indx, ind_id := range split_line[9:] {
+		if checkSkipSamples(ind_id, skipWords) {
+			continue
+		}
+		person_pos := indx + 9
+		samplesMap[person_pos] = ind_id
+	}
+
+	return samplesMap
 }
