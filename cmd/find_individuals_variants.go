@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"fmt"
+	internal "go-phers-parser/internal"
 	"go-phers-parser/internal/files"
 	"os"
 	"slices"
@@ -10,15 +11,6 @@ import (
 	"time"
 )
 
-type RuntimeConfig struct {
-	CallsFile         string
-	SamplesList       string
-	SamplesFilepath   string
-	OutputFilepath    string
-	ClinvarColumnName string
-	ConsequenceCol    string
-	LogfilePath       string
-}
 type SampleInfo struct {
 	Score                 string
 	PathogenicVariants    []string
@@ -253,7 +245,7 @@ func write_variants(writer *bufio.Writer, sample_variants map[string]*SampleInfo
 	writer.Flush()
 }
 
-func FindSampleVariants(config RuntimeConfig) {
+func FindSampleVariants(config internal.UserArgs) {
 	start_time := time.Now()
 
 	fmt.Printf("began the analysis at: %s\n", start_time.Format("2006-01-02@15:04:05"))

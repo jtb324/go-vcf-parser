@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	internal "go-phers-parser/internal"
 	"go-phers-parser/internal/files"
 	"os"
 	"regexp"
@@ -14,17 +15,6 @@ import (
 )
 
 type VariantAnnotations map[string]*strings.Builder
-
-type PullVariantsArgs struct {
-	AnnoFile        string
-	ColsToKeep      string
-	SamplesFilepath string
-	OutputFile      string
-	LogFilePath     string
-	MafCap          float64
-	Region          string
-	Buffersize      int
-}
 
 type VariantInfo struct {
 	VariantID   string
@@ -473,7 +463,7 @@ func parse_region(region_str string) (Region, []error) {
 	return region, err
 }
 
-func PullVariants(args PullVariantsArgs) {
+func PullVariants(args internal.UserArgs) {
 	start_time := time.Now()
 
 	fmt.Printf("began the analysis at: %s\n", start_time.Format("2006-01-02@15:04:05"))
