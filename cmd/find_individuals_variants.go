@@ -8,16 +8,17 @@ import (
 	"slices"
 	"strings"
 	"time"
-
-	"github.com/spf13/cobra"
 )
 
-var sample_var_cmds = &cobra.Command{
-	Use:   "view-sample-variants",
-	Short: "grab the variants that samples of interest have. This command uses the output from the pull-variants command",
-	Run:   find_sample_variants,
+type RuntimeConfig struct {
+	CallsFile         string
+	SamplesList       string
+	SamplesFilepath   string
+	OutputFilepath    string
+	ClinvarColumnName string
+	ConsequenceCol    string
+	LogfilePath       string
 }
-
 type SampleInfo struct {
 	Score                 string
 	PathogenicVariants    []string
@@ -252,27 +253,21 @@ func write_variants(writer *bufio.Writer, sample_variants map[string]*SampleInfo
 	writer.Flush()
 }
 
-func find_sample_variants(cmd *cobra.Command, args []string) {
+func FindSampleVariants(config RuntimeConfig) {
 	start_time := time.Now()
 
 	fmt.Printf("began the analysis at: %s\n", start_time.Format("2006-01-02@15:04:05"))
 	// read in the appropriate CLI flags
-	calls_file, _ := cmd.Flags().GetString("calls-file")
-	samples_list, _ := cmd.Flags().GetString("samples-list")
-	samples_filepath, _ := cmd.Flags().GetString("samples-file")
-	output_filepath, _ := cmd.Flags().GetString("output")
-	clinvar_column_name, _ := cmd.Flags().GetString("clinvar-col")
-	consequence_col, _ := cmd.Flags().GetString("consequence-col")
 
 	var samples []string
 	var sample_file_err []error
-	if samples_list != "" {
-		samples = strings.Split(samples_list, ",")
-	} else if samples_filepath != "" {
+	if config.SamplesList != "" {
+		samples = strings.Split(config.SamplesList, ",")
+	} else if config.SamplesFilepath != "" {
 		// process the samples file
-		samples, sample_file_err = read_samples_file(samples_filepath)
+		samples, sample_file_err = read_samples_file(config.SamplesFilepath)
 		if sample_file_err != nil {
-			fmt.Printf("Encountered the following errors while trying to read in samples from the file %s\n", samples_filepath)
+			fmt.Printf("Encountered the following errors while trying to read in samples from the file %s\n", config.SamplesFilepath)
 			for msg_indx, msg := range sample_file_err {
 				fmt.Printf("Error Msg %d:\n %s", msg_indx, msg)
 			}
@@ -283,7 +278,7 @@ func find_sample_variants(cmd *cobra.Command, args []string) {
 
 	// Create the scanner to read the calls file with a custom buffer
 
-	sample_variants, errs := parse_calls(calls_file, samples, clinvar_column_name, consequence_col)
+	sample_variants, errs := parse_calls(config.CallsFile, samples, config.ClinvarColumnName, config.ConsequenceCol)
 
 	var parsing_err_encountered bool
 	for _, err_msg := range errs {
@@ -299,17 +294,17 @@ func find_sample_variants(cmd *cobra.Command, args []string) {
 
 	fmt.Printf("Identified variants for %d samples\n", len(sample_variants))
 
-	output_fh, output_err := os.Create(output_filepath)
+	output_fh, output_err := os.Create(config.OutputFilepath)
 
 	if output_err != nil {
-		fmt.Printf("Encountered the following error while trying to open the output file, %s.\n %s\n", output_filepath, output_err)
+		fmt.Printf("Encountered the following error while trying to open the output file, %s.\n %s\n", config.OutputFilepath, output_err)
 		os.Exit(1)
 	}
 
 	defer output_fh.Close()
 
 	writer := bufio.NewWriter(output_fh)
-	fmt.Printf("Writing output to the file: %s\n", output_filepath)
+	fmt.Printf("Writing output to the file: %s\n", config.OutputFilepath)
 	write_variants(writer, sample_variants)
 
 	end_time := time.Now()
@@ -319,18 +314,4 @@ func find_sample_variants(cmd *cobra.Command, args []string) {
 	duration := end_time.Sub(start_time)
 
 	fmt.Printf("total analysis time: %s\n", duration.String())
-}
-
-// I am assuming that the user is using bcftools to stream data into this program. Therefore
-// we only need to read from the stdin stream and don't nedd them to provide the vcf file as
-// input
-func init() {
-	RootCmd.AddCommand(sample_var_cmds)
-	sample_var_cmds.Flags().StringP("calls-file", "c", "", "output tab separated file from the pull-variants command. Each row should be a variant and each column will be an individuals with the phers score (if the score was provided in that command)")
-	sample_var_cmds.Flags().StringP("samples-list", "s", "", "list of sample ids to find all the variants for. This list should be comma separated with now spaces inbetween ids.")
-	sample_var_cmds.Flags().StringP("samples-file", "S", "", "filepath to a tab separated text file that has the samples we wish to keep. The first column is expected to be a list of grids and the file may or may not have a header")
-	sample_var_cmds.Flags().StringP("output", "o", "test_output.txt", "Filepath to write the output file to.")
-	sample_var_cmds.Flags().String("clinvar-col", "", "column label of the clinical annotations column. These annotations can come from VEP or manual annotations")
-	sample_var_cmds.Flags().String("consequence-col", "", "column label of the of the consequences column. This column should contain values like 'intron_variant' or 'missense_variant', etc..")
-	sample_var_cmds.Flags().String("log-filepath", "text.log", "Filepath to write the log file to.")
 }

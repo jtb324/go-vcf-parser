@@ -8,15 +8,7 @@ import (
 	"os"
 	"slices"
 	"strings"
-
-	"github.com/spf13/cobra"
 )
-
-var variant_calls = &cobra.Command{
-	Use:   "find-all-carriers",
-	Short: "find the individuals with variant calls for a site of interest. Expects vcf input to be streamed in from bcftools",
-	Run:   find_all_carriers,
-}
 
 func check_alt_call(call string, reference_call_set map[string]bool) bool {
 	_, call_is_ref := reference_call_set[call] // line checks to see if our value is one of the reference calls
@@ -136,10 +128,7 @@ func writer(writer *bufio.Writer, results Result) {
 
 // This function is used to find all the individuals with variant calls for a site of interest.
 // It expects to have input streamed in from bcftools
-func find_all_carriers(cmd *cobra.Command, args []string) {
-	output_filepath, _ := cmd.Flags().GetString("output")
-	buffersize, _ := cmd.Flags().GetInt("buffersize")
-	exclusion_substring, _ := cmd.Flags().GetString("sample-exclusion-string")
+func FindAllCarrierCalls(output_filepath string, buffersize int, exclusion_substring string) {
 
 	// we need to create the reader
 	vcfStreamer := files.MakeStreamReader(buffersize)
@@ -183,11 +172,4 @@ func find_all_carriers(cmd *cobra.Command, args []string) {
 	buffered_writer := bufio.NewWriter(output_fh)
 
 	writer(buffered_writer, resultObj)
-}
-
-func init() {
-	RootCmd.AddCommand(variant_calls)
-	variant_calls.Flags().StringP("output", "o", "test_output.txt", "Filepath to write the output file to.")
-	variant_calls.Flags().IntP("buffersize", "b", 5012*5012, "buffersize to use while reading through the streamed input data. Default: 5012*5012 bytes")
-	variant_calls.Flags().String("sample-exclusion-string", "", "List of comma-separated substrings that may indicate if a sample should be excluded from the analysis. This situation can arise if reference panel controls were kept in the vcf or if invalid samples are present. This code can filter out those individuals by seeing if the substring is present int the ID. This list sould not have spaces between the strings")
 }

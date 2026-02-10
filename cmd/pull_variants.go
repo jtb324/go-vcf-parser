@@ -11,17 +11,20 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/spf13/cobra"
 )
 
-var pull_var_cmd = &cobra.Command{
-	Use:   "pull-variants",
-	Short: "pull variants for the specified region",
-	Run:   pull_variants,
-}
-
 type VariantAnnotations map[string]*strings.Builder
+
+type PullVariantsArgs struct {
+	AnnoFile        string
+	ColsToKeep      string
+	SamplesFilepath string
+	OutputFile      string
+	LogFilePath     string
+	MafCap          float64
+	Region          string
+	Buffersize      int
+}
 
 type VariantInfo struct {
 	VariantID   string
@@ -470,20 +473,15 @@ func parse_region(region_str string) (Region, []error) {
 	return region, err
 }
 
-func pull_variants(cmd *cobra.Command, args []string) {
+func PullVariants(args PullVariantsArgs) {
 	start_time := time.Now()
 
 	fmt.Printf("began the analysis at: %s\n", start_time.Format("2006-01-02@15:04:05"))
 	// parse all the arguments needs for this command
-	anno_file, _ := cmd.Flags().GetString("anno-file")
-	cols_to_keep, _ := cmd.Flags().GetString("keep-cols")
-	samples_filepath, _ := cmd.Flags().GetString("samples")
-	output_file, _ := cmd.Flags().GetString("output")
-	maf_cap, _ := cmd.Flags().GetFloat64("maf-threshold")
-	region, _ := cmd.Flags().GetString("region")
+
 	// log_filepath, _ := cmd.Flags().GetString("log-filepath")
 	// lets parse the region
-	parsed_region, region_err := parse_region(region)
+	parsed_region, region_err := parse_region(args.Region)
 
 	if region_err != nil {
 		fmt.Printf("Encountered the following errors while trying to parse the region value: \n")
@@ -495,9 +493,9 @@ func pull_variants(cmd *cobra.Command, args []string) {
 	}
 	// read in the annotations into a dictionary
 
-	anno_cols_to_keep := strings.Split(cols_to_keep, ",")
+	anno_cols_to_keep := strings.Split(args.ColsToKeep, ",")
 
-	anno_map, anno_err := read_annotations(anno_file, anno_cols_to_keep, parsed_region)
+	anno_map, anno_err := read_annotations(args.AnnoFile, anno_cols_to_keep, parsed_region)
 
 	if anno_err != nil {
 		fmt.Printf("Encountered the following error while trying to read in the annotations.\n %s\n", anno_err)
@@ -507,14 +505,14 @@ func pull_variants(cmd *cobra.Command, args []string) {
 	// we also need to read in the samples file. We are going to return 2 values. One will
 	// be the list of ids as we encounter them in the file. The other will be the list of
 	// ids with the phers score appended
-	sample_phenos := read_in_samples(samples_filepath)
+	sample_phenos := read_in_samples(args.SamplesFilepath)
 
 	// lets read from stdin. We need to increase the buffer because the default buffer is too small for our files
-	buf := make([]byte, 0, 5120*5120)
+	buf := make([]byte, args.Buffersize)
 
 	buffered_vcf := bufio.NewScanner(os.Stdin)
 
-	buffered_vcf.Buffer(buf, 5120*5120)
+	buffered_vcf.Buffer(buf, args.Buffersize)
 
 	// We need to process the header row first. Ids in the sample string are in the same
 	// order as the samples but they have the phenotype information added to the string
@@ -529,10 +527,10 @@ func pull_variants(cmd *cobra.Command, args []string) {
 	// this is the order they will be in the vcf stream
 	samples_indices := map_header_ids(samples)
 	// We also need to open the output file for writing
-	output_fh, output_err := os.Create(output_file)
+	output_fh, output_err := os.Create(args.OutputFile)
 
 	if output_err != nil {
-		fmt.Printf("There was an issue trying to create the output file: %s\n", output_file)
+		fmt.Printf("There was an issue trying to create the output file: %s\n", args.OutputFile)
 		os.Exit(1)
 	}
 
@@ -546,7 +544,7 @@ func pull_variants(cmd *cobra.Command, args []string) {
 
 	wg.Add(1)
 	// now we can parse the vcf file
-	go parse_vcf_file(buffered_vcf, maf_cap, anno_map, samples, samples_indices, ch, &wg)
+	go parse_vcf_file(buffered_vcf, args.MafCap, anno_map, samples, samples_indices, ch, &wg)
 
 	wg.Add(1)
 
@@ -561,18 +559,4 @@ func pull_variants(cmd *cobra.Command, args []string) {
 	duration := end_time.Sub(start_time)
 
 	fmt.Printf("total analysis time: %s\n", duration.String())
-}
-
-// I am assuming that the user is using bcftools to stream data into this program. Therefore
-// we only need to read from the stdin stream and don't nedd them to provide the vcf file as
-// input
-func init() {
-	RootCmd.AddCommand(pull_var_cmd)
-	pull_var_cmd.Flags().StringP("anno-file", "a", "", "Filepath to an annotation file (currently only supports VEP so that there is a canocial column that we can use to avoid duplicates and only look at the cannocial transcript).")
-	pull_var_cmd.Flags().StringP("keep-cols", "c", "", "Columns in the annotation file to keep.")
-	pull_var_cmd.Flags().StringP("samples", "s", "", "file where the first column contains the samples for ")
-	pull_var_cmd.Flags().StringP("output", "o", "test_output.txt", "Filepath to write the output file to.")
-	pull_var_cmd.Flags().StringP("region", "r", "", "Region of the chromosome that we are interested in searching for. This region should have the form chrX:start-end. We will use this region to filter which annotations we save in memory")
-	pull_var_cmd.Flags().String("log-filepath", "text.log", "Filepath to write the log file to.")
-	pull_var_cmd.Flags().Float64("maf-threshold", 0.1, "Minor allele frequency cap to filter output to only variants less than this value")
 }
