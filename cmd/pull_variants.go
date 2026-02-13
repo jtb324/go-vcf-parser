@@ -7,7 +7,6 @@ import (
 	internal "go-phers-parser/internal"
 	"go-phers-parser/internal/files"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -258,8 +257,9 @@ func writeToFile(samples string, annotation_cols []string, writer *bufio.Writer,
 // }
 
 func check_region(anno_pos string, start int, end int) (bool, []error) {
-	re := regexp.MustCompile(`[:|-]`)
-	split_pos := re.Split(anno_pos, -1)
+	split_pos := strings.FieldsFunc(anno_pos, func(r rune) bool {
+		return r == ':' || r == '-'
+	})
 
 	// This makes the assumption that the position either has the from chr:pos or pos or chr:pos1-pos2.
 	// If the position is only "pos" then the split will produce an array of 1 value. If there is only
@@ -295,6 +295,26 @@ func check_region(anno_pos string, start int, end int) (bool, []error) {
 	}
 	// Here we are going to check if the starting region falls within our desired region or if the end end position falls within our starting region
 	return start <= start_pos && start_pos <= end || (end_pos != 0 && start <= end_pos && end_pos <= end), conversion_err
+}
+
+// To improve performance we are going to use cut in a for loop to get the column that we desire.
+// assume the col_indx is zero based
+func retrieve_pos(line string, col_indx int) (string, error) {
+	var return_string string
+	var err error
+
+	for i := 0; i <= col_indx; i++ {
+		val, rest, found := strings.Cut(line, "\t")
+		if !found {
+			err = fmt.Errorf("ERROR: expected the variant annotation rows to be tab separated but we failed to find any tab spaces int the row.")
+			break
+		}
+		if i == col_indx {
+			return_string = val
+		}
+		line = rest
+	}
+	return return_string, err
 }
 
 func read_annotations(filepath string, cols_to_grab []string, region Region) (map[string]VariantAnnotations, error) {
@@ -333,13 +353,21 @@ Main_Loop:
 		// Sometimes variants also have multiple transcripts and therefore show up on multiple rows.
 		// We have to handle this by aggregating together the different information
 		// we can use a string builder to keep track of the annotation and separate the different values by a comma
-		split_line := strings.Split(strings.TrimSpace(cur_line), "\t")
+
 		// first lets see if this annotation is even in the right position. If it is not in the right position then we can just continue the loop
-		if in_region, ok := check_region(split_line[1], region.start, region.end); !in_region && ok == nil {
+		pos_str, err := retrieve_pos(cur_line, 1)
+
+		if err != nil {
+			// We just skip the row if we fail to read it in
+			continue Main_Loop
+		}
+		if in_region, ok := check_region(pos_str, region.start, region.end); !in_region && ok == nil {
+			// move on from the row if the position is incorrect
 			continue Main_Loop
 		} else if ok != nil {
-			fmt.Printf("Encountered an issue while checking if the variant %s was in the search region of %d-%d\n %s\n Skipping this variant and proceeding to the next one", split_line[1], region.start, region.end, ok)
+			fmt.Printf("Encountered an issue while checking if the variant %s was in the search region of %d-%d\n %s\n Skipping this variant and proceeding to the next one", pos_str, region.start, region.end, ok)
 		}
+		split_line := strings.Split(cur_line, "\t")
 		// we can check if there is already an annotation created for the variant and add things to it. Otherwise we can just
 		variant_annotations := annotations[split_line[0]]
 		// if the anotation is present then we can iterate over the columns and update the string.builder for each appropriate columns
@@ -403,7 +431,7 @@ func read_in_samples(samples_filepath string) map[string]string {
 	// We are assuming that the first column is the sample id and the second column is the score
 	for scanner.Scan() {
 		line := scanner.Text()
-
+		fmt.Printf("%s\n", line)
 		split_line := strings.Split(strings.TrimSpace(line), "\t")
 
 		if len(split_line) == 1 {
@@ -433,8 +461,9 @@ type Region struct {
 }
 
 func parse_region(region_str string) (Region, []error) {
-	re := regexp.MustCompile(`[:|-]`)
-	region_split := re.Split(region_str, -1)
+	region_split := strings.FieldsFunc(region_str, func(r rune) bool {
+		return r == ':' || r == '-'
+	})
 
 	var err []error
 	var region Region
@@ -495,7 +524,7 @@ func PullVariants(args internal.UserArgs) {
 	// we also need to read in the samples file. We are going to return 2 values. One will
 	// be the list of ids as we encounter them in the file. The other will be the list of
 	// ids with the phers score appended
-	sample_phenos := read_in_samples(args.SamplesFilepath)
+	sample_phenos := read_in_samples(args.PhenoFilePath)
 
 	// lets read from stdin. We need to increase the buffer because the default buffer is too small for our files
 	buf := make([]byte, args.Buffersize)
@@ -508,7 +537,7 @@ func PullVariants(args internal.UserArgs) {
 	// order as the samples but they have the phenotype information added to the string
 	// formatted as "_score"
 	samples, sample_str, header_err := process_header_ids(buffered_vcf, sample_phenos)
-
+	fmt.Printf("length of samples after parsing the header%d\n", len(samples))
 	if header_err != nil {
 		fmt.Printf("%s\nTerminating programming...\n", header_err)
 		os.Exit(1)

@@ -36,7 +36,8 @@ func read_samples_file(samples_filepath string) ([]string, []error) {
 		sample_scanner := bufio.NewScanner(samples_fh)
 		for sample_scanner.Scan() {
 			line := sample_scanner.Text()
-			if strings.Contains(strings.ToLower(line), "grid") || strings.Contains(strings.ToLower(line), "IID") {
+			if strings.Contains(strings.ToLower(line), "grid") {
+				// we can skip the header line if it exists
 				continue
 			}
 			split_line := strings.Split(strings.TrimSpace(line), "\t")
@@ -253,13 +254,13 @@ func FindSampleVariants(config internal.UserArgs) {
 
 	var samples []string
 	var sample_file_err []error
-	if config.SamplesList != "" {
-		samples = strings.Split(config.SamplesList, ",")
-	} else if config.SamplesFilepath != "" {
+	if config.PhenoFilePath == "" {
+		fmt.Printf("Error: No file contain the list of cases was provided. Please make sure you provide a file where the first column list all of the cases in the network to pul variants for")
+	} else if config.PhenoFilePath != "" {
 		// process the samples file
-		samples, sample_file_err = read_samples_file(config.SamplesFilepath)
+		samples, sample_file_err = read_samples_file(config.PhenoFilePath)
 		if sample_file_err != nil {
-			fmt.Printf("Encountered the following errors while trying to read in samples from the file %s\n", config.SamplesFilepath)
+			fmt.Printf("Encountered the following errors while trying to read in samples from the file %s\n", config.PhenoFilePath)
 			for msg_indx, msg := range sample_file_err {
 				fmt.Printf("Error Msg %d:\n %s", msg_indx, msg)
 			}

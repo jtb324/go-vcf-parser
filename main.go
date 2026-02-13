@@ -24,14 +24,14 @@ func main() {
 			Usage:   "Filepath to an annotation file (currently on supports VEP so that there is a canocial colum that we can use to avoid duplicates and only look at the cannocial transcript).",
 		},
 		&cli.StringFlag{
+			Name:    "pheno-file",
+			Aliases: []string{"p"},
+			Usage:   "Filepath to a tab separated file where the first column are ids and the second column is the case/control status. This file can have a header with the columns 'GRID' and 'Status' or it can have no header",
+		},
+		&cli.StringFlag{
 			Name:    "keep-cols",
 			Aliases: []string{"c"},
 			Usage:   "Columns in the annotation file to keep while it is being read in.",
-		},
-		&cli.StringFlag{
-			Name:    "samples-file",
-			Aliases: []string{"s"},
-			Usage:   "File where the first column contains the samples that we wish to keep in the analysis",
 		},
 		&cli.StringFlag{
 			Name:    "output",
@@ -60,21 +60,6 @@ func main() {
 	}
 
 	pull_sample_variants := []cli.Flag{
-		// &cli.StringFlag{
-		// 	Name:    "calls-file",
-		// 	Aliases: []string{"c"},
-		// 	Usage:   "output tab separated file from the pull-variants command. Each row should be a variant and each column willl be an individual with tthe phers score (if the score was provided in that command)",
-		// },
-		&cli.StringFlag{
-			Name:    "samples-list",
-			Aliases: []string{"s"},
-			Usage:   "list of sample ids to find all the variants for. This list should be comma separated with spaces no spaces between the ids",
-		},
-		&cli.StringFlag{
-			Name:    "samples-file",
-			Aliases: []string{"S"},
-			Usage:   "filepath to a tab separated text file that has the ssampels we wish to keep. The first column is expected to be a list of grids and the file amy or may not have a header",
-		},
 		&cli.StringFlag{
 			Name:  "clinvar-col",
 			Usage: "column label of the clinical annotations column. These annotations can come fro VEP or manual annotations.",
@@ -94,7 +79,7 @@ func main() {
 				Name:    "buffersize",
 				Aliases: []string{"b"},
 				Value:   5012 * 5012,
-				Usage:   "buffersize to use while reading through the streamed input data. Default: 5012&**2 bytes",
+				Usage:   "buffersize to use while reading through the streamed input data. Default: 5012**2 bytes",
 			},
 			&cli.StringFlag{
 				Name:  "log-filepath",
@@ -115,14 +100,14 @@ func main() {
 				Flags: pull_var_flags,
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					pull_vars_args := internal.UserArgs{
-						AnnoFile:        cmd.String("anno-file"),
-						ColsToKeep:      cmd.String("keep-cols"),
-						SamplesFilepath: cmd.String("samples"),
-						OutputFile:      cmd.String("output"),
-						LogFilePath:     cmd.String("log-filepath"),
-						MafCap:          cmd.Float("maf_threshold"),
-						Region:          cmd.String("region"),
-						Buffersize:      cmd.Int("buffersize"),
+						AnnoFile:      cmd.String("anno-file"),
+						ColsToKeep:    cmd.String("keep-cols"),
+						PhenoFilePath: cmd.String("pheno-file"),
+						OutputFile:    cmd.String("output"),
+						LogFilePath:   cmd.String("log-filepath"),
+						MafCap:        cmd.Float("maf_threshold"),
+						Region:        cmd.String("region"),
+						Buffersize:    cmd.Int("buffersize"),
 					}
 
 					cmd_commands.PullVariants(pull_vars_args)
@@ -152,8 +137,7 @@ func main() {
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					userArgs := internal.UserArgs{
 						CallsFile:         cmd.String("calls-file"),
-						SamplesList:       cmd.String("samples-list"),
-						SamplesFilepath:   cmd.String("samples-file"),
+						PhenoFilePath:     cmd.String("pheno-file"),
 						OutputFilepath:    cmd.String("output"),
 						ClinvarColumnName: cmd.String("clinvar-col"),
 						ConsequenceCol:    cmd.String("consequence-col"),
@@ -168,7 +152,7 @@ func main() {
 			},
 			{
 				Name:  "run-pipeline",
-				Usage: "This subcommand serves as a pipeline that connects the pull-variants subcommand with the view-sample-variants subcommand. So that users can run both together if they wish to",
+				Usage: "This subcommand serves as a pipeline that connects the pull-variants subcommand with the view-sample-variants subcommand. So that users can run both together if they wish to. To run this we are assuming that the input sequencing file is being piped through bcftools",
 				// Now we can appened the subcommand flags to this pipeline
 				Flags: append(append([]cli.Flag{}, pull_var_flags...), pull_sample_variants...),
 				Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -194,13 +178,15 @@ func main() {
 						Region:            cmd.String("region"),
 						Buffersize:        cmd.Int("buffersize"),
 						CallsFile:         output_file1,
-						SamplesList:       cmd.String("samples-list"),
-						SamplesFilepath:   cmd.String("samples-file"),
+						PhenoFilePath:     cmd.String("pheno-file"),
 						OutputFilepath:    output_file1,
 						ClinvarColumnName: cmd.String("clinvar-col"),
 						ConsequenceCol:    cmd.String("consequence-col"),
 						LogfilePath:       cmd.String("log-filepath"),
 					}
+
+					fmt.Printf("Reading in annotations for the region %s and pulling variants for the samples in the samples file, %s\n", userArgs.Region, userArgs.PhenoFilePath)
+
 					cmd_commands.PullVariants(userArgs)
 
 					//lest make sure that the output file is right now

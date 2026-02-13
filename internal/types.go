@@ -3,7 +3,7 @@ package internal
 type UserArgs struct {
 	CallsFile         string
 	SamplesList       string
-	SamplesFilepath   string
+	PhenoFilePath     string
 	OutputFilepath    string
 	ClinvarColumnName string
 	ConsequenceCol    string
