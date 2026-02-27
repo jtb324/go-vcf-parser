@@ -6,6 +6,7 @@ import (
 	"fmt"
 	internal "go-phers-parser/internal"
 	"go-phers-parser/internal/files"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -78,7 +79,7 @@ func check_allele_freq(token string, max_freq_threshold float64) (bool, error) {
 	return false, nil
 }
 
-func process_header_ids(vcf_scanner *bufio.Scanner, pheno_map map[string]string) ([]string, string, error) {
+func process_header_ids(vcf_scanner *bufio.Scanner, pheno_map map[string]string, logger *slog.Logger) ([]string, string, error) {
 	// We need to return a list of the samples. This value will be used while parsing the vcf file sequencing calls.
 	var samples []string
 	// create the sample string builder so that we can add ids as we process them. This string will be used when writting the output
@@ -110,7 +111,7 @@ Scanner: // we can create a label for the outer scanner loop so that we can sele
 					break Scanner // Break out of the whole scanner loop
 				}
 			}
-			fmt.Printf("processed the header line for the provided vcf file and identified %d samples in the header\n", samples_count)
+			logger.Info(fmt.Sprintf("processed the header line for the provided vcf file and identified %d samples in the header", samples_count))
 			break Scanner // we don't want to process more of the scanner so we can break after processing the header
 		} else { // If we are not in any of the header lines then we actually want to process the calls
 			err = fmt.Errorf("there was no header detected in the initial lines of the vcf file. This program expects for there to be a header line that begins with a single #CHROM in order to identify the sample ids. This lack of header may be the result of streaming the data using bcftools with the -H flag to remove the header. Please remove this flag, and rerun the program")
@@ -124,23 +125,41 @@ Scanner: // we can create a label for the outer scanner loop so that we can sele
 	return samples, sample_str.String(), err
 }
 
-func parse_vcf_file(vcf_scanner *bufio.Scanner, maf_cap float64, annotations map[string]VariantAnnotations, samples []string, sample_indices map[string]int, ch chan<- VariantInfo, wg *sync.WaitGroup) {
+func parse_vcf_file(vcf_scanner *bufio.Scanner, maf_cap float64, annotations map[string]VariantAnnotations, samples []string, sample_indices map[string]int, ch chan<- VariantInfo, wg *sync.WaitGroup, logger *slog.Logger) {
 	defer wg.Done()
+	logger.Info("Starting to parse VCF lines in parse_vcf_file...")
 	// Lets create the reference genotype map
 	reference_calls := generate_reference_set()
 	// now we can parse through the vcf file. We don't have to account for the header lines
 	// because we have a separator function handling this before the go routines
+	lines_scanned := 0
+	variants_skipped := 0 // For now we are going to use this variable to track variants we are skipping
 	for vcf_scanner.Scan() {
-
+		lines_scanned++
 		line := vcf_scanner.Text()
+
+		if lines_scanned%1000 == 0 {
+			logger.Info(fmt.Sprintf("Scanned %d lines...\n", lines_scanned))
+		}
 
 		// we can first skip all the unnessecary header lines that have runtime information that we don't need
 		// We need to make sure the variants are within our region of interest
 		split_line := strings.Split(strings.TrimSpace(line), "\t")
+		if len(split_line) < 10 {
+			variants_skipped++
+			continue // Skip malformed lines or header lines that might have slipped through
+		}
 
 		// we also need to get the minor allele freq
 		// If there is an error then we can continue in the loop
-		if pass_af_threshold, freq_err := check_allele_freq(split_line[7], maf_cap); pass_af_threshold && freq_err == nil {
+		pass_af_threshold, freq_err := check_allele_freq(split_line[7], maf_cap)
+		if freq_err != nil {
+			logger.Error(fmt.Sprintf("Error checking allele frequency on line %d: %s\n", lines_scanned, freq_err))
+			variants_skipped++
+			continue
+		}
+
+		if pass_af_threshold {
 			// we only need to determine if any of the calls are non variant and then we can return those sites
 			if non_ref_call_found := parse_genotype_calls(split_line[9:], reference_calls); non_ref_call_found {
 				// we can build the calls string we need to ensure that the calls are
@@ -164,10 +183,19 @@ func parse_vcf_file(vcf_scanner *bufio.Scanner, maf_cap float64, annotations map
 				variant := VariantInfo{VariantID: split_line[2], InfoFields: split_line[0:9], Calls: call_string.String(), Annotations: anno}
 				ch <- variant
 			}
+		} else {
+			variants_skipped++
 		}
 		if vcf_scanner.Err() != nil {
-			fmt.Printf("Encountered the following error while attempting to read through the vcf file:\n %s\n", vcf_scanner.Err())
+			logger.Error(fmt.Sprintf("Encountered the following error while attempting to read through the vcf file:\n %s", vcf_scanner.Err()))
 		}
+	}
+	logger.Info(fmt.Sprintf("Skipped %d variants while parsing the vcf file\n", variants_skipped))
+
+	if vcf_scanner.Err() != nil {
+		logger.Info(fmt.Sprintf("Encountered the following error after the vcf scanner loop:\n %s", vcf_scanner.Err()))
+	} else if lines_scanned == 0 {
+		logger.Info("No variants were scanned. The VCF stream might be empty after the header.")
 	}
 	close(ch)
 }
@@ -184,7 +212,7 @@ func generate_annotation_str(variant_annos VariantAnnotations, anno_cols []strin
 	return annotation_str.String()
 }
 
-func writeToFile(samples string, annotation_cols []string, writer *bufio.Writer, ch <-chan VariantInfo, wg *sync.WaitGroup) {
+func writeToFile(samples string, annotation_cols []string, writer *bufio.Writer, ch <-chan VariantInfo, wg *sync.WaitGroup, logger *slog.Logger) {
 	defer wg.Done()
 	// counter to record how many variants were written to a file
 	variants_written := 0
@@ -204,7 +232,7 @@ func writeToFile(samples string, annotation_cols []string, writer *bufio.Writer,
 	_, header_err := writer.WriteString(header_str.String())
 
 	if header_err != nil {
-		fmt.Printf("encountered an error while trying to write the header string, %s, to a file. The cause of this could be a bug in the code or unexpected separators in your data. Flushing all of the current data in the writer to the output file but this file is incomplete.\n", header_str.String())
+		logger.Error(fmt.Sprintf("encountered an error while trying to write the header string, %s, to a file. The cause of this could be a bug in the code or unexpected separators in your data. Flushing all of the current data in the writer to the output file but this file is incomplete.", header_str.String()))
 		writer.Flush()
 		os.Exit(1)
 	}
@@ -234,7 +262,7 @@ func writeToFile(samples string, annotation_cols []string, writer *bufio.Writer,
 		_, variant_err := writer.WriteString(output_str.String())
 
 		if variant_err != nil {
-			fmt.Printf("encountered an error while trying to write the output variant string, %s, for the variant object, %+v\n. This error could be the result of a bug in the code or an encoding issue within the data. Flushing all current data in the writer but the output file will be incomplete\n", output_str.String(), variant)
+			logger.Error(fmt.Sprintf("encountered an error while trying to write the output variant string, %s, for the variant object, %+v\n. This error could be the result of a bug in the code or an encoding issue within the data. Flushing all current data in the writer but the output file will be incomplete", output_str.String(), variant))
 			writer.Flush()
 			os.Exit(1)
 		}
@@ -242,19 +270,8 @@ func writeToFile(samples string, annotation_cols []string, writer *bufio.Writer,
 		variants_written++
 	}
 	writer.Flush()
-	fmt.Printf("Recorded information for %d variant(s)\n", variants_written)
+	logger.Info(fmt.Sprintf("Recorded information for %d variant(s)", variants_written))
 }
-
-// func load_column_mappings(line string) map[string]int {
-// 	column_mappings := make(map[string]int)
-//
-// 	column_list := strings.Split(strings.TrimSpace(line), "\t")
-//
-// 	for indx, value := range column_list {
-// 		column_mappings[value] = indx
-// 	}
-// 	return column_mappings
-// }
 
 func check_region(anno_pos string, start int, end int) (bool, []error) {
 	split_pos := strings.FieldsFunc(anno_pos, func(r rune) bool {
@@ -317,9 +334,9 @@ func retrieve_pos(line string, col_indx int) (string, error) {
 	return return_string, err
 }
 
-func read_annotations(filepath string, cols_to_grab []string, region Region) (map[string]VariantAnnotations, error) {
-	fmt.Printf("Reading in the annotation file: %s\n", filepath)
-	fmt.Printf("Collecting annotations only for sites overlapping this region: %s:%d-%d\n", region.chrom, region.start, region.end)
+func read_annotations(filepath string, cols_to_grab []string, region Region, logger *slog.Logger) (map[string]VariantAnnotations, error) {
+	logger.Info(fmt.Sprintf("Reading in the annotation file: %s", filepath))
+	logger.Info(fmt.Sprintf("Collecting annotations only for sites overlapping this region: %s:%d-%d", region.chrom, region.start, region.end))
 	annotations := make(map[string]VariantAnnotations)
 
 	var err error
@@ -343,7 +360,7 @@ func read_annotations(filepath string, cols_to_grab []string, region Region) (ma
 	} else if !anno_fr.Header_Found {
 		return nil, errors.New("there was no header line detected within the file %s, when we were looking for the phrase %s. Since this program is designed to work with VEP and this is default column header in VEP, this value is necessary for the rest of the analysis. Please make sure that this value is in the annotation file")
 	} else {
-		fmt.Printf("Mapped the indices of %d columns from the annotation file header\n", len(anno_fr.Header_col_indx))
+		logger.Info(fmt.Sprintf("Mapped the indices of %d columns from the annotation file header", len(anno_fr.Header_col_indx)))
 	}
 
 Main_Loop:
@@ -356,7 +373,6 @@ Main_Loop:
 
 		// first lets see if this annotation is even in the right position. If it is not in the right position then we can just continue the loop
 		pos_str, err := retrieve_pos(cur_line, 1)
-
 		if err != nil {
 			// We just skip the row if we fail to read it in
 			continue Main_Loop
@@ -365,7 +381,7 @@ Main_Loop:
 			// move on from the row if the position is incorrect
 			continue Main_Loop
 		} else if ok != nil {
-			fmt.Printf("Encountered an issue while checking if the variant %s was in the search region of %d-%d\n %s\n Skipping this variant and proceeding to the next one", pos_str, region.start, region.end, ok)
+			logger.Error(fmt.Sprintf("Encountered an issue while checking if the variant %s was in the search region of %d-%d\n %s\n Skipping this variant and proceeding to the next one", pos_str, region.start, region.end, ok))
 		}
 		split_line := strings.Split(cur_line, "\t")
 		// we can check if there is already an annotation created for the variant and add things to it. Otherwise we can just
@@ -406,11 +422,11 @@ Main_Loop:
 		}
 	}()
 
-	fmt.Printf("Read in %d annotations from the file: %s\n", len(annotations), filepath)
+	logger.Info(fmt.Sprintf("Read in %d annotations from the file: %s", len(annotations), filepath))
 	return annotations, err
 }
 
-func read_in_samples(samples_filepath string) map[string]string {
+func read_in_samples(samples_filepath string, logger *slog.Logger) map[string]string {
 	// we are going to return one array of the sample ids and one array of the
 	// sample ids with the score appended to the id. This list will be in the
 	// same order
@@ -419,7 +435,7 @@ func read_in_samples(samples_filepath string) map[string]string {
 	samples_fh, sample_err := os.Open(samples_filepath)
 
 	if sample_err != nil {
-		fmt.Printf("Encountered the following error while trying to open the file %s.\n%s\n", samples_filepath, sample_err)
+		logger.Error(fmt.Sprintf("Encountered the following error while trying to open the file %s.\n%s\n", samples_filepath, sample_err))
 		os.Exit(1)
 	}
 
@@ -431,7 +447,6 @@ func read_in_samples(samples_filepath string) map[string]string {
 	// We are assuming that the first column is the sample id and the second column is the score
 	for scanner.Scan() {
 		line := scanner.Text()
-		fmt.Printf("%s\n", line)
 		split_line := strings.Split(strings.TrimSpace(line), "\t")
 
 		if len(split_line) == 1 {
@@ -446,10 +461,10 @@ func read_in_samples(samples_filepath string) map[string]string {
 		}
 	}
 	if scanner.Err() != nil {
-		fmt.Printf("Encountered an error while scanning through the samples file:\n %s\n.", scanner.Err())
+		logger.Error(fmt.Sprintf("Encountered an error while scanning through the samples file:\n %s.", scanner.Err()))
 	}
 
-	fmt.Printf("Read in %d samples from the file: %s\n", len(sample_ids), samples_filepath)
+	logger.Info(fmt.Sprintf("Read in %d samples from the file: %s\n", len(sample_ids), samples_filepath))
 
 	return sample_ids
 }
@@ -461,6 +476,7 @@ type Region struct {
 }
 
 func parse_region(region_str string) (Region, []error) {
+
 	region_split := strings.FieldsFunc(region_str, func(r rune) bool {
 		return r == ':' || r == '-'
 	})
@@ -492,10 +508,11 @@ func parse_region(region_str string) (Region, []error) {
 	return region, err
 }
 
-func PullVariants(args internal.UserArgs) {
+func PullVariants(args internal.UserArgs, logger *slog.Logger) {
 	start_time := time.Now()
 
-	fmt.Printf("began the analysis at: %s\n", start_time.Format("2006-01-02@15:04:05"))
+	logger.Info(fmt.Sprintf("began the analysis at: %s\n", start_time.Format("2006-01-02@15:04:05")))
+
 	// parse all the arguments needs for this command
 
 	// log_filepath, _ := cmd.Flags().GetString("log-filepath")
@@ -503,9 +520,9 @@ func PullVariants(args internal.UserArgs) {
 	parsed_region, region_err := parse_region(args.Region)
 
 	if region_err != nil {
-		fmt.Printf("Encountered the following errors while trying to parse the region value: \n")
+		logger.Error("Encountered the following errors while trying to parse the region value: ")
 		for _, msg := range region_err {
-			fmt.Println(msg)
+			logger.Error(fmt.Sprintf("%s", msg))
 		}
 		// These issues are all worth terminating the program
 		os.Exit(1)
@@ -514,17 +531,17 @@ func PullVariants(args internal.UserArgs) {
 
 	anno_cols_to_keep := strings.Split(args.ColsToKeep, ",")
 
-	anno_map, anno_err := read_annotations(args.AnnoFile, anno_cols_to_keep, parsed_region)
+	anno_map, anno_err := read_annotations(args.AnnoFile, anno_cols_to_keep, parsed_region, logger)
 
 	if anno_err != nil {
-		fmt.Printf("Encountered the following error while trying to read in the annotations.\n %s\n", anno_err)
+		logger.Error(fmt.Sprintf("Encountered the following error while trying to read in the annotations.\n %s", anno_err))
 		os.Exit(1)
 	}
 
 	// we also need to read in the samples file. We are going to return 2 values. One will
 	// be the list of ids as we encounter them in the file. The other will be the list of
 	// ids with the phers score appended
-	sample_phenos := read_in_samples(args.PhenoFilePath)
+	sample_phenos := read_in_samples(args.PhenoFilePath, logger)
 
 	// lets read from stdin. We need to increase the buffer because the default buffer is too small for our files
 	buf := make([]byte, args.Buffersize)
@@ -536,20 +553,24 @@ func PullVariants(args internal.UserArgs) {
 	// We need to process the header row first. Ids in the sample string are in the same
 	// order as the samples but they have the phenotype information added to the string
 	// formatted as "_score"
-	samples, sample_str, header_err := process_header_ids(buffered_vcf, sample_phenos)
-	fmt.Printf("length of samples after parsing the header%d\n", len(samples))
+	samples, sample_str, header_err := process_header_ids(buffered_vcf, sample_phenos, logger)
+	logger.Info(fmt.Sprintf("length of samples after parsing the header: %d", len(samples)))
 	if header_err != nil {
-		fmt.Printf("%s\nTerminating programming...\n", header_err)
+		logger.Error(fmt.Sprintf("%s\nTerminating programming...", header_err))
 		os.Exit(1)
 	}
 	// we then nedd to use the samples list and map this values to an index because
 	// this is the order they will be in the vcf stream
 	samples_indices := map_header_ids(samples)
+
+	logger.Info(fmt.Sprintf("Mapped %d sample indices. Scanner error: %v", len(samples_indices), buffered_vcf.Err()))
+	logger.Info(fmt.Sprintf("Starting analysis with MafCap: %f and Region: %s", args.MafCap, args.Region))
+
 	// We also need to open the output file for writing
 	output_fh, output_err := os.Create(args.OutputFile)
 
 	if output_err != nil {
-		fmt.Printf("There was an issue trying to create the output file: %s\n", args.OutputFile)
+		logger.Error(fmt.Sprintf("There was an issue trying to create the output file: %s\n", args.OutputFile))
 		os.Exit(1)
 	}
 
@@ -563,19 +584,19 @@ func PullVariants(args internal.UserArgs) {
 
 	wg.Add(1)
 	// now we can parse the vcf file
-	go parse_vcf_file(buffered_vcf, args.MafCap, anno_map, samples, samples_indices, ch, &wg)
+	go parse_vcf_file(buffered_vcf, args.MafCap, anno_map, samples, samples_indices, ch, &wg, logger)
 
 	wg.Add(1)
 
-	go writeToFile(sample_str, anno_cols_to_keep, writer, ch, &wg)
+	go writeToFile(sample_str, anno_cols_to_keep, writer, ch, &wg, logger)
 
 	wg.Wait()
 
 	end_time := time.Now()
 
-	fmt.Printf("finished analysis at: %s\n", end_time.Format("2006-01-02@15:04:05"))
+	logger.Info(fmt.Sprintf("finished analysis at: %s", end_time.Format("2006-01-02@15:04:05")))
 
 	duration := end_time.Sub(start_time)
 
-	fmt.Printf("total analysis time: %s\n", duration.String())
+	logger.Info(fmt.Sprintf("total analysis time: %s", duration.String()))
 }

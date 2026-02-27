@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,9 +10,16 @@ import (
 
 	cmd_commands "go-phers-parser/cmd"
 	"go-phers-parser/internal"
+	log "go-phers-parser/logger"
 
 	"github.com/urfave/cli/v3"
 )
+
+func GenerateLogFileName(output_path string, log_filename string) string {
+	parent_output_dir := filepath.Dir(output_path)
+
+	return filepath.Join(parent_output_dir, log_filename)
+}
 
 func main() {
 	// we are going to define our flag arrays here
@@ -92,6 +98,11 @@ func main() {
 				Value:   "test_output.txt",
 				Usage:   "Filepath to write the output file to. If running subcommands individually then this should be a full file path with a suffix. If you are running the pipeline command then this value should only be the output prefix.",
 			},
+			&cli.BoolFlag{
+				Name:    "verbose",
+				Aliases: []string{"v"},
+				Usage:   "increase the verbosity of the program (use -v or -vv). There are only 3 levels so anything above -vv will just be treated as -vv",
+			},
 		},
 		Commands: []*cli.Command{
 			{
@@ -99,18 +110,23 @@ func main() {
 				Usage: "pull variants for the specified region",
 				Flags: pull_var_flags,
 				Action: func(ctx context.Context, cmd *cli.Command) error {
+					// Count the number of times that the verbosity flag was passed
+					verbosity := cmd.Count("verbose")
 					pull_vars_args := internal.UserArgs{
 						AnnoFile:      cmd.String("anno-file"),
 						ColsToKeep:    cmd.String("keep-cols"),
 						PhenoFilePath: cmd.String("pheno-file"),
 						OutputFile:    cmd.String("output"),
-						LogFilePath:   cmd.String("log-filepath"),
-						MafCap:        cmd.Float("maf_threshold"),
-						Region:        cmd.String("region"),
+						MafCap:        cmd.Float("maf-threshold"),
 						Buffersize:    cmd.Int("buffersize"),
+						Region:        cmd.String("region"),
 					}
 
-					cmd_commands.PullVariants(pull_vars_args)
+					log_output_path := GenerateLogFileName(pull_vars_args.OutputFile, cmd.String("log-filepath"))
+
+					logger := log.CreateLogger(verbosity, log_output_path)
+
+					cmd_commands.PullVariants(pull_vars_args, logger)
 
 					return nil
 				},
@@ -120,9 +136,14 @@ func main() {
 				Usage: "find the individuals with variant calls for a site of interest. Expects vcf input to be streamed in from bcftools",
 				Flags: find_all_carriers_flags,
 				Action: func(ctx context.Context, cmd *cli.Command) error {
+					verbosity := cmd.Count("verbose")
 					output_path := cmd.String("output")
 					buffersize := cmd.Int("buffersize")
 					sample_exclusion := cmd.String("sample-exclusion-string")
+
+					log_output_path := GenerateLogFileName(output_path, cmd.String("log-filepath"))
+
+					log.CreateLogger(verbosity, log_output_path)
 
 					cmd_commands.FindAllCarrierCalls(output_path, buffersize, sample_exclusion)
 
@@ -135,6 +156,8 @@ func main() {
 				Usage: "grab the variants that samples of interest have. This command uses the output from the pull-variants command",
 				Flags: pull_sample_variants,
 				Action: func(ctx context.Context, cmd *cli.Command) error {
+					verbosity := cmd.Count("verbose")
+
 					userArgs := internal.UserArgs{
 						CallsFile:         cmd.String("calls-file"),
 						PhenoFilePath:     cmd.String("pheno-file"),
@@ -144,7 +167,11 @@ func main() {
 						LogfilePath:       cmd.String("log-filepath"),
 					}
 
-					cmd_commands.FindSampleVariants(userArgs)
+					log_output_path := GenerateLogFileName(userArgs.OutputFilepath, cmd.String("log-filepath"))
+
+					logger := log.CreateLogger(verbosity, log_output_path)
+
+					cmd_commands.FindSampleVariants(userArgs, logger)
 
 					//TODO: Need to update the FindSampleVariants to return an error
 					return nil
@@ -159,25 +186,35 @@ func main() {
 
 					start_time := time.Now()
 
-					fmt.Printf("began the analysis at: %s\n", start_time.Format("2006-01-02@15:04:05"))
+					verbosity := cmd.Count("verbose")
 
 					// We need to first make sure that the output file has no suffix (meaning it is only a prefix)
 					userProvidedOutput := cmd.String("output")
+
+					// Lets create the logger
+					log_output_path := GenerateLogFileName(userProvidedOutput, cmd.String("log-filepath"))
+
+					logger := log.CreateLogger(verbosity, log_output_path)
+
+					logger.Info(fmt.Sprintf("began the analysis at: %s\n", start_time.Format("2006-01-02@15:04:05")))
+
 					final_output_prefix := strings.TrimSuffix(userProvidedOutput, filepath.Ext(userProvidedOutput))
 
 					output_file1 := fmt.Sprintf("%s_all_network_id_variants.txt", final_output_prefix)
+					logger.Info(fmt.Sprintf("Writing the output of step 1 to %s", output_file1))
 
 					output_file2 := fmt.Sprintf("%s_cases_in_network_variants.txt", final_output_prefix)
+
+					logger.Info(fmt.Sprintf("Writing the output of step 2 to %s", output_file2))
 
 					userArgs := internal.UserArgs{
 						AnnoFile:          cmd.String("anno-file"),
 						ColsToKeep:        cmd.String("keep-cols"),
 						OutputFile:        output_file1,
-						LogFilePath:       cmd.String("log-filepath"),
-						MafCap:            cmd.Float("maf_threshold"),
-						Region:            cmd.String("region"),
+						MafCap:            cmd.Float("maf-threshold"),
 						Buffersize:        cmd.Int("buffersize"),
 						CallsFile:         output_file1,
+						Region:            cmd.String("region"),
 						PhenoFilePath:     cmd.String("pheno-file"),
 						OutputFilepath:    output_file1,
 						ClinvarColumnName: cmd.String("clinvar-col"),
@@ -185,22 +222,22 @@ func main() {
 						LogfilePath:       cmd.String("log-filepath"),
 					}
 
-					fmt.Printf("Reading in annotations for the region %s and pulling variants for the samples in the samples file, %s\n", userArgs.Region, userArgs.PhenoFilePath)
+					logger.Info(fmt.Sprintf("Reading in annotations for the region %s and pulling variants for the samples in the samples file, %s\n", userArgs.Region, userArgs.PhenoFilePath))
 
-					cmd_commands.PullVariants(userArgs)
+					cmd_commands.PullVariants(userArgs, logger)
 
 					//lest make sure that the output file is right now
-					userArgs.OutputFile = output_file2
+					userArgs.OutputFilepath = output_file2
 
-					cmd_commands.FindSampleVariants(userArgs)
+					cmd_commands.FindSampleVariants(userArgs, logger)
 
 					end_time := time.Now()
 
-					fmt.Printf("finished analysis at: %s\n", end_time.Format("2006-01-02@15:04:05"))
+					logger.Info(fmt.Sprintf("finished analysis at: %s\n", end_time.Format("2006-01-02@15:04:05")))
 
 					duration := end_time.Sub(start_time)
 
-					fmt.Printf("total analysis time: %s\n", duration.String())
+					logger.Info(fmt.Sprintf("total analysis time: %s\n", duration.String()))
 					//TODO: Need to update the FindSampleVariants to return an error
 					return nil
 				},
@@ -208,6 +245,6 @@ func main() {
 		},
 	}
 	if err := cmd.Run(context.Background(), os.Args); err != nil {
-		log.Fatal(err)
+		fmt.Println(err)
 	}
 }

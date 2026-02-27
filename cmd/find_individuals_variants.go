@@ -5,6 +5,7 @@ import (
 	"fmt"
 	internal "go-phers-parser/internal"
 	"go-phers-parser/internal/files"
+	"log/slog"
 	"os"
 	"slices"
 	"strings"
@@ -24,8 +25,8 @@ type SampleID struct {
 	Score    string
 }
 
-func read_samples_file(samples_filepath string) ([]string, []error) {
-	fmt.Printf("Reading in all of the desired samples from the file %s\n", samples_filepath)
+func read_samples_file(samples_filepath string, logger *slog.Logger) ([]string, []error) {
+	logger.Info(fmt.Sprintf("Reading in all of the desired samples from the file %s\n", samples_filepath))
 	var errors []error
 	var samples []string
 
@@ -53,12 +54,12 @@ func read_samples_file(samples_filepath string) ([]string, []error) {
 	if len(samples) == 0 {
 		errors = append(errors, fmt.Errorf("unable to read any of the samples from the file, %s. Please ensure that the file is tab separated and that each row is 1 individual", samples_filepath))
 	} else {
-		fmt.Printf("Read %d samples in from the file, %s\n", len(samples), samples_filepath)
+		logger.Info(fmt.Sprintf("Read %d samples in from the file, %s\n", len(samples), samples_filepath))
 	}
 	return samples, errors
 }
 
-func get_sample_col_indices(header_map map[string]int, samples []string) []SampleID {
+func get_sample_col_indices(header_map map[string]int, samples []string, logger *slog.Logger) []SampleID {
 	var sample_map []SampleID
 
 	for sample_id, indx := range header_map {
@@ -75,7 +76,7 @@ func get_sample_col_indices(header_map map[string]int, samples []string) []Sampl
 			sample_map = append(sample_map, SampleID{Index: indx, SampleID: split_id[0], Score: ""})
 		}
 	}
-	fmt.Printf("Successfully mapped the indices for %d columns from the header\n", len(sample_map))
+	logger.Info(fmt.Sprintf("Successfully mapped the indices for %d columns from the header", len(sample_map)))
 	return sample_map
 }
 
@@ -119,7 +120,7 @@ func initialize_sample_info(samples []SampleID) map[string]*SampleInfo {
 	return sampleInfo
 }
 
-func parse_calls(calls_file string, samples []string, pathogenic_colname string, consequence_colname string) (map[string]*SampleInfo, []error) {
+func parse_calls(calls_file string, samples []string, pathogenic_colname string, consequence_colname string, logger *slog.Logger) (map[string]*SampleInfo, []error) {
 	var errors []error
 
 	calls_fr := files.MakeFileReader(calls_file, 1024*1024)
@@ -155,7 +156,7 @@ func parse_calls(calls_file string, samples []string, pathogenic_colname string,
 		return nil, errors
 	}
 	// we also need to map the sample id columns
-	sample_indices := get_sample_col_indices(calls_fr.Header_col_indx, samples)
+	sample_indices := get_sample_col_indices(calls_fr.Header_col_indx, samples, logger)
 
 	sampleInfo := initialize_sample_info(sample_indices)
 
@@ -246,23 +247,23 @@ func write_variants(writer *bufio.Writer, sample_variants map[string]*SampleInfo
 	writer.Flush()
 }
 
-func FindSampleVariants(config internal.UserArgs) {
+func FindSampleVariants(config internal.UserArgs, logger *slog.Logger) {
 	start_time := time.Now()
 
-	fmt.Printf("began the analysis at: %s\n", start_time.Format("2006-01-02@15:04:05"))
+	logger.Info(fmt.Sprintf("began the analysis at: %s\n", start_time.Format("2006-01-02@15:04:05")))
 	// read in the appropriate CLI flags
 
 	var samples []string
 	var sample_file_err []error
 	if config.PhenoFilePath == "" {
-		fmt.Printf("Error: No file contain the list of cases was provided. Please make sure you provide a file where the first column list all of the cases in the network to pul variants for")
+		logger.Error("No file contained the list of cases was provided. Please make sure you provide a file where the first column list all of the cases in the network to pul variants for")
 	} else if config.PhenoFilePath != "" {
 		// process the samples file
-		samples, sample_file_err = read_samples_file(config.PhenoFilePath)
+		samples, sample_file_err = read_samples_file(config.PhenoFilePath, logger)
 		if sample_file_err != nil {
-			fmt.Printf("Encountered the following errors while trying to read in samples from the file %s\n", config.PhenoFilePath)
+			logger.Error(fmt.Sprintf("Encountered the following errors while trying to read in samples from the file %s\n", config.PhenoFilePath))
 			for msg_indx, msg := range sample_file_err {
-				fmt.Printf("Error Msg %d:\n %s", msg_indx, msg)
+				logger.Error(fmt.Sprintf("Error Msg %d:\n %s", msg_indx, msg))
 			}
 			os.Exit(1)
 		}
@@ -271,40 +272,40 @@ func FindSampleVariants(config internal.UserArgs) {
 
 	// Create the scanner to read the calls file with a custom buffer
 
-	sample_variants, errs := parse_calls(config.CallsFile, samples, config.ClinvarColumnName, config.ConsequenceCol)
+	sample_variants, errs := parse_calls(config.CallsFile, samples, config.ClinvarColumnName, config.ConsequenceCol, logger)
 
 	var parsing_err_encountered bool
 	for _, err_msg := range errs {
 		if err_msg != nil {
-			fmt.Printf("Error Msg:\n%s\n", err_msg)
+			logger.Error(fmt.Sprintf("Error Msg:\n%s\n", err_msg))
 			parsing_err_encountered = true
 		}
 	}
 	if parsing_err_encountered {
-		fmt.Println("Terminating program because of the above errors...")
+		logger.Info("Terminating program because of the above errors...")
 		os.Exit(1)
 	}
 
-	fmt.Printf("Identified variants for %d samples\n", len(sample_variants))
+	logger.Info(fmt.Sprintf("Identified variants for %d samples", len(sample_variants)))
 
 	output_fh, output_err := os.Create(config.OutputFilepath)
 
 	if output_err != nil {
-		fmt.Printf("Encountered the following error while trying to open the output file, %s.\n %s\n", config.OutputFilepath, output_err)
+		logger.Error(fmt.Sprintf("Encountered the following error while trying to open the output file, %s.\n %s", config.OutputFilepath, output_err))
 		os.Exit(1)
 	}
 
 	defer output_fh.Close()
 
 	writer := bufio.NewWriter(output_fh)
-	fmt.Printf("Writing output to the file: %s\n", config.OutputFilepath)
+	logger.Info(fmt.Sprintf("Writing output to the file: %s", config.OutputFilepath))
 	write_variants(writer, sample_variants)
 
 	end_time := time.Now()
 
-	fmt.Printf("finished analysis at: %s\n", end_time.Format("2006-01-02@15:04:05"))
+	logger.Info(fmt.Sprintf("finished analysis at: %s", end_time.Format("2006-01-02@15:04:05")))
 
 	duration := end_time.Sub(start_time)
 
-	fmt.Printf("total analysis time: %s\n", duration.String())
+	logger.Info(fmt.Sprintf("total analysis time: %s", duration.String()))
 }
